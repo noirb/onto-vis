@@ -1,0 +1,906 @@
+
+  <html>
+  <head>
+    <title>OntoAgent Breakdown</title>
+    <link rel="stylesheet" type="text/css" href="semantic-ui/semantic.min.css">
+    <style type="text/css">
+      body {
+        margin: 0px;
+        padding: 0px;
+      }
+      #graph-container {
+        width: 100%;
+        height: 600px;
+        margin: 8px auto;
+      }
+      .item {
+        cursor: pointer;
+      }
+    </style>
+
+    <script type="text/javascript" src="js/jquery-3.1.1.min.js"></script>
+    <script type="text/javascript" src="js/plotly.min.js"></script>
+    <script type="text/javascript" src="js/ros/eventemitter2.min.js"></script>
+    <script type="text/javascript" src="js/ros/roslib.min.js"></script>
+    <script type="text/javascript" src="js/cytoscape/cytoscape.min.js"></script>
+    <script type="text/javascript" src="js/cytoscape/dagre.0.7.4.min.js"></script>
+    <script type="text/javascript" src="js/cytoscape/cytoscape-dagre.js"></script>
+    <script type="text/javascript" src="semantic-ui/semantic.min.js"></script>
+
+    <script type="text/javascript" src="graphing.js"></script>
+    <script type="text/javascript" src="plotting.js"></script>
+    <script type="text/javascript" src="utils.js"></script>
+
+    <!-- ROS Init Code -->
+    <script type="text/javascript">
+
+        var ros;
+        var activityGraph_svc;
+        var relabelActivity_svc;
+        var relabelObject_svc;
+        var getActivities_svc;
+        var addOntologyClass_svc;
+        var getAllClassInstances_svc;
+        var saveLog_svc;
+
+        function init_ros_handlers( ros )
+        {
+            activityGraph_svc = new ROSLIB.Service({
+                ros         : ros,
+                name        : 'sgv/bot/getActivityGraph',
+                serviceType : 'ontology_svcs/GetActivityGraph'
+            });
+
+            relabelActivity_svc = new ROSLIB.Service({
+                ros         : ros,
+                name        : '/sgv/bot/relabelActivity',
+                serviceType : 'ontology_svcs/RelabelActivity'
+            });
+
+            relabelObject_svc = new ROSLIB.Service({
+                ros         : ros,
+                name        : '/sgv/bot/relabelObject',
+                serviceType : 'ontology_svcs/RelabelObject'
+            });
+
+            addOntologyClass_svc = new ROSLIB.Service({
+                ros         : ros,
+                name        : '/sgv/bot/assertNewClass',
+                serviceType : 'ontology_svcs/AssertClass'
+            });
+
+            getActivities_svc = new ROSLIB.Service({
+                ros         : ros,
+                name        : 'sgv/bot/getActivities',
+                serviceType : 'ontology_svcs/GetActivities'
+            });
+
+            getAllClassInstances_svc = new ROSLIB.Service({
+                ros         : ros,
+                name        : 'sgv/onto/GetAllClassInstancesWithPoses',
+                serviceType : 'ontology_svcs/GetAllClassInstancesWithPoses'
+            });
+
+            saveLog_svc = new ROSLIB.Service({
+                ros         : ros,
+                name        : 'sgv/bot/saveLog',
+                serviceType : 'ontology_svcs/SaveLog'
+            });
+        }
+
+        function connectToROS( ip, port, callback )
+        {
+            var ros = new ROSLIB.Ros({
+                url : 'ws://' + ip + ":" + port
+            });
+
+            ros.on('connection', function() {
+                console.log('Connected to ROS Websocket Server at ' + ip + ':' + port);
+                callback(true);
+                init_ros_handlers( ros );
+            });
+
+            ros.on('error', function( error ) {
+                console.log('Error connecting to ROS Websocket Server at ' + ip + ':' + port + ' -- ', error);
+                callback(false);
+            });
+
+            ros.on('close', function() {
+                console.log('Connection to ROS Websocket Server at ' + ip + ':' + port + ' closed.');
+                callback(false);
+            });
+
+            return ros;
+        }
+
+     </script>
+
+     <script type="text/javascript">
+     function init_plots (ros) {
+        console.log('Initializing hand plots...');
+
+        // max # of data points to store in a given plot
+        var data_max_len = 1000;
+
+        // layouts for plot labels
+        var lh_vel_layout = {
+            xaxis: { title: "Time (seconds)" },
+            yaxis: { title: "Velocity" },
+            title: "Left Hand Velocity Over Time",
+            height: 400,
+            width: 750
+        };
+
+        var lh_pos_layout = {
+            xaxis: { title: "Time (seconds)" },
+            yaxis: { title: "Position" },
+            title: "Left Hand Position Over Time",
+            height: 400,
+            width: 750
+        };
+
+        var rh_vel_layout = {
+            xaxis: { title: "Time (seconds)" },
+            yaxis: { title: "Velocity" },
+            title: "Right Hand Velocity Over Time",
+            height: 400,
+            width: 750
+        };
+
+        var rh_pos_layout = {
+            xaxis: { title: "Time (seconds)" },
+            yaxis: { title: "Position" },
+            title: "Right Hand Position Over Time",
+            height: 400,
+            width: 750
+        };
+
+        // construct plot objects
+        var rh_velocity = make_velocityPlot(data_max_len);
+        var lh_velocity = make_velocityPlot(data_max_len);
+        var rh_position = make_positionPlot(data_max_len);
+        var lh_position = make_positionPlot(data_max_len);
+
+        // subscribe to relevant topics
+        var left_hand_listener = new ROSLIB.Topic({
+            ros : ros,
+            throttle_rate : 20,
+            name : '/sgv/human/hands/left',
+            messageType : 'ontology_msgs/HandUpdate'
+        });
+        left_hand_listener.subscribe( function( message ) {
+            var time = timestamp2float( message.handState.timestamp );
+            lh_velocity.push( time, message.handState.velocity );
+            lh_position.push( time, message.handState.position );
+        });
+
+        var right_hand_listener = new ROSLIB.Topic({
+            ros : ros,
+            throttle_rate : 20,
+            name : '/sgv/human/hands/right',
+            messageType : 'ontology_msgs/HandUpdate'
+        });
+        right_hand_listener.subscribe( function( message ) {
+            var time = timestamp2float( message.handState.timestamp );
+            rh_velocity.push( time, message.handState.velocity );
+            rh_position.push( time, message.handState.position );
+        });
+
+        // update timers for our plots
+        setInterval( function(){
+                                update_plot("plot-container-left-hand-velocity",  lh_velocity.getData(), lh_vel_layout);
+                                update_plot("plot-container-left-hand-position",  lh_position.getData(), lh_pos_layout);
+                               }, 300 );
+        setInterval( function(){
+                                update_plot("plot-container-right-hand-velocity", rh_velocity.getData(), rh_vel_layout);
+                                update_plot("plot-container-right-hand-position", rh_position.getData(), rh_pos_layout);
+                               }, 300 );
+
+        // initialize plots
+        var lveldata = [lh_velocity.traces.x, lh_velocity.traces.y, lh_velocity.traces.z];
+        var rveldata = [rh_velocity.traces.x, rh_velocity.traces.y, rh_velocity.traces.z];
+        var lposdata = [lh_position.traces.x, lh_position.traces.y, lh_position.traces.z];
+        var rposdata = [rh_position.traces.x, rh_position.traces.y, rh_position.traces.z];
+        Plotly.newPlot( "plot-container-left-hand-velocity", lveldata, lh_vel_layout );
+        Plotly.newPlot( "plot-container-right-hand-velocity", rveldata, rh_vel_layout );
+        Plotly.newPlot( "plot-container-left-hand-position", lposdata, lh_pos_layout );
+        Plotly.newPlot( "plot-container-right-hand-position", rposdata, rh_pos_layout );
+
+        console.log( 'Plots Initialization complete' );
+    }
+        </script>
+    <!-- Graph rendering -->
+    <script type="text/javascript">
+        function getShortName( name ) {
+            if (name.includes('#'))
+            {
+                return name.split('#')[1];
+            }
+            return name.replace('>', '').replace('<','').replace(' ', '_');
+        }
+
+        function sleep( ms ) {
+          return new Promise( resolve => setTimeout( resolve, ms ) );
+        }
+
+        function activityGraph( container, data )
+        {
+            var graph = cytoscape({ 
+            container: container,
+
+            wheelSensitivity: 0.2,
+
+            elements: data,
+
+            style: [
+                {
+                    selector: 'node',
+                    style: {
+                        'background-color': '#696',
+                        'label' : 'data(id)',
+                        'text-outline-width' : 0.5,
+                        'text-outline-color' : '#CEC',
+                        'width' : 8,
+                        'height' : 8
+                    }
+                },
+                {
+                    selector: 'edge',
+                    style: {
+                        'width': 2,
+                        'line-color': '#666',
+                        'target-arrow-color': '#e23b22',
+                        'target-arrow-shape': 'triangle',
+                        'curve-style': 'bezier',
+                        'control-point-step-size': 40
+                    }
+                },
+                {
+                    selector: '.title',
+                    style: {
+                        'background-color': '#000',
+                        'text-outline-color': '#666',
+                        'label': 'data(id)',
+                        'color': '#444',
+                        'text-background-color': '#882',
+                        'text-background-opacity': 0.4,
+                        'text-background-shape': 'roundrectangle'
+                    }
+                },
+                {
+                    selector: '.inhand',
+                    style: {
+                        'background-color': '#f77c11',
+                        'text-outline-color': '#f77c11',
+                        'line-color': '#f74611'
+                    }
+                },
+                {
+                    selector: '.actedon',
+                    style: {
+                        'background-color': '#969',
+                        'text-outline-color': '#CEC',
+                        'line-color': '#22e2cf'
+                    }
+                }
+            ],
+
+            layout: {
+                name: 'dagre',
+                ready: function(){},
+                stop: function(){},
+                rankDir: 'BT',
+                animate: true,
+                animationThreshold: 250,
+                refresh: 20,
+                fit: true,
+                padding: 30,
+                boundingBox: undefined,
+                randomize: true,
+                componentSpacing: 100,
+                nodeRepulsion: function( node ){ return 400000; },
+                nodeOverlap: 10,
+                idealEdgeLength: function( edge ){ return 10; },
+                edgeElasticity: function( edge ){ return 100; },
+                nestingFactor: 5,
+                gravity: 80,
+                numIter: 1000,
+                initialTemp: 200,
+                coolingFactor: 0.95,
+                minTemp: 1.0,
+                useMultitasking: false
+            }
+            });
+
+            return graph;
+        }
+
+        function init_ontograph( container, ros ) {
+            var cy = TaskGraph( container, [{ data: { id: 'empty graph' } }], [] );
+
+            var processing_graph = false;
+            var last_req = 0;
+            var graph_listener = new ROSLIB.Topic({
+                ros : ros,
+                throttle_rate : 40,
+                name : 'sgv/tasks/graph',
+                messageType : 'ontology_msgs/Graph'
+            });
+            graph_listener.subscribe( async function( message ) {
+                console.log("Got new graph!");
+                var my_req = last_req++;
+                if ( processing_graph )
+                {
+                    console.log( "Waiting for previous graph to be done..." );
+                    while ( processing_graph )
+                    {
+                        // bail if a more recent request came in before we could process ours
+                        if ( last_req > my_req )
+                        {
+                            console.log( "Canceling graph " + last_req );
+                            return;
+                        }
+                        // otherwise wait our turn...
+                        await sleep(10);
+                    }
+                }
+
+                processing_graph = true;
+                // clear any existing graph
+                console.log("Clearing old graph...");
+                cy.remove('*');
+                console.log("Adding new nodes...");
+                // first add all nodes to graph
+                message.nodes.forEach( function( entry ) {
+                    cy.add({ data: { id: getShortName(entry.name.split(' ')[0]) } });
+                });
+                // add all edges
+                console.log("Adding new edges...");
+                message.nodes.forEach( function( entry ) {
+                    var sourceName = getShortName(entry.name.split(' ')[0]);
+                    for ( var i = 0; i < entry.neighbors.length; i++ )
+                    {
+                        var destName = getShortName(entry.neighbors[i].split(' ')[0]);
+                        cy.add({ data: { id: "e_" + sourceName + "_" + destName, source: sourceName, target: destName, weight: entry.weights[i] } });
+                    }
+                });
+                // re-layout new graph
+                console.log("Laying out new graph...");
+                var layout_opt = {
+                    name: 'cose',
+                    ready: function(){},
+                    stop: function(){ processing_graph = false; },
+                    animate: true,
+                    animationThreshold: 250,
+                    refresh: 20,
+                    fit: true,
+                    padding: 30,
+                    boundingBox: undefined,
+                    randomize: true,
+                    componentSpacing: 100,
+                    nodeRepulsion: function( node ){ return 400000; },
+                    nodeOverlap: 10,
+                    idealEdgeLength: function( edge ){ return 10; },
+                    edgeElasticity: function( edge ){ return 100; },
+                    nestingFactor: 5,
+                    gravity: 80,
+                    numIter: 1000,
+                    initialTemp: 200,
+                    coolingFactor: 0.95,
+                    minTemp: 1.0,
+                    useMultitasking: true
+                };
+                cy.layout(layout_opt);
+                console.log("DONE!");
+            });
+
+            var graph_update_listener = new ROSLIB.Topic({
+                ros : ros,
+                name : '/sgv/onto/graph/updates',
+                messageType : 'ontology_msgs/GraphUpdate'
+            });
+            graph_update_listener.subscribe( function( message ) {
+                console.log("Got GraphUpdate ( " + message.operation + " )");
+                switch ( message.operation )
+                {
+                    case 1:
+                        console.log("Adding new node: " + message.node.name);
+                        cy.add({ data: { id: getShortName(message.node.name) } });
+                        message.node.neighbors.forEach(function(n) {
+                            cy.add({ data: { id: "e_" + getShortName(message.node.name) + "_" + n, source: getShortName(message.node.name), target: getShortName(n) } });
+                        });
+                        console.log("Laying out new graph...");
+                        var layout_opt = {
+                            name: 'cose',
+                            ready: function(){},
+                            stop: function(){},
+                            animate: false,
+                            animationThreshold: 250,
+                            refresh: 0,
+                            fit: true,
+                            padding: 30,
+                            boundingBox: undefined,
+                            randomize: true,
+                            componentSpacing: 100,
+                            nodeRepulsion: function( node ){ return 400000; },
+                            nodeOverlap: 10,
+                            idealEdgeLength: function( edge ){ return 10; },
+                            edgeElasticity: function( edge ){ return 100; },
+                            nestingFactor: 5,
+                            gravity: 80,
+                            numIter: 1000,
+                            initialTemp: 200,
+                            coolingFactor: 0.95,
+                            minTemp: 1.0,
+                            useMultitasking: true
+                        };
+                        cy.layout(layout_opt);
+                        break;
+
+                    case 2:
+                        console.log("Removing node: " + message.node.name);
+                        cy.remove(getShortName(message.node.name));
+                        break;
+                        
+                    case 3:
+                        console.log("Updating node: " + message.node.name);
+                        // remove all outgoing edges from node
+                        cy.remove('edge[source = "' + getShortName(message.node.name) + '"]');
+                        // add edges from msg
+                        message.node.neighbors.forEach(function(n) {
+                            cy.add({ data: { id: "e_" + getShortName(message.node.name) + "_" + n, source: getShortName(message.node.name), target: getShortName(n) } });
+                        });
+                        console.log("Laying out new graph...");
+                        var layout_opt = {
+                            name: 'breadthfirst',
+                            ready: function(){},
+                            stop: function(){},
+                            animate: true,
+                            animationThreshold: 250,
+                            refresh: 20,
+                            fit: true,
+                            padding: 30,
+                            boundingBox: undefined,
+                            randomize: true,
+                            componentSpacing: 100,
+                            nodeRepulsion: function( node ){ return 400000; },
+                            nodeOverlap: 10,
+                            idealEdgeLength: function( edge ){ return 10; },
+                            edgeElasticity: function( edge ){ return 100; },
+                            nestingFactor: 5,
+                            gravity: 80,
+                            numIter: 1000,
+                            initialTemp: 200,
+                            coolingFactor: 0.95,
+                            minTemp: 1.0,
+                            useMultitasking: true
+                        };
+                        cy.layout(layout_opt);
+                        break;
+
+                    default:
+                        console.log("Unknown operation D:");
+                }
+            });
+
+            document.getElementById('taskgraph-refresh-btn').addEventListener("click", 
+            function() 
+            {
+                cy.fit('*'); 
+                cy.center();
+            });
+        }
+    </script>
+
+    <script type="text/javascript">
+
+        function relabelActivity( oldName, newName )
+        {
+            if( newName && newName != oldName )
+            {
+                newName = newName.replace(' ', '-');
+
+                var request = new ROSLIB.ServiceRequest();
+                request.newName = newName;
+                request.oldName = oldName;
+
+                relabelActivity_svc.callService( request, function( result ) {
+                    if( result.success )
+                        loadActivityList( $('#activities') );
+                    else
+                        alert( result.reason );
+                });
+            }
+        }
+
+        function relabelObject( objName, objClass )
+        {
+            $('#relabel-obj-name').html(objName);
+            $('#relabel-obj-class').val(objClass);
+            $('#relabel-obj-dialog').modal(
+                {
+                    'onApprove' : function() {
+                        var newClass = $('#relabel-obj-class').val();
+                        if( newClass && newClass != objClass )
+                        {
+                            newClass = newClass.replace(' ', '-');
+                            var request = new ROSLIB.ServiceRequest();
+                            request.objName = objName;
+                            request.objClass = newClass;
+
+                            relabelObject_svc.callService( request, function( result ) {
+                                if( result.success )
+                                    loadObjectList( $('#obj-instances-list') );
+                                else
+                                    alert( 'Failed to relabel object:\n' + result.reason );
+                            });
+                        }
+                    }
+                }
+            ).modal('show');
+        }
+
+        function loadActivityList( container )
+        {
+            if (ros == null || !ros.isConnected)
+            {
+                container.html("Please connect to ROS first...");
+            }
+            else
+            {
+                getActivities_svc.callService( new ROSLIB.ServiceRequest(), function( result ) {
+                    var list = container;
+                    // clear existing list
+                    list.empty();
+
+                    // populate with service req results
+                    result.activities.forEach( function( n ) {
+                        var activityName = n.name;
+                        var className = n.className;
+                                // main list content
+                        var html = '<div class="ui styled fluid accordion"><div class="active title inline"><div class="header">' +
+                                          activityName + ' (' + className + ')</div><button class="ui tiny compact circular button" onclick="(function(){relabelActivity(\''+activityName+'\',prompt(\'Enter new activity name\',\''+activityName+'\'));event.stopPropagation();})()"><i class="icon Edit"></i></button>';
+                        // add element for inhand/actedon objects only if we have some
+                        if (n.inHand.length > 0 || n.actedOn.length > 0)
+                            html += '<div class="ui compact segment" style="margin-left: 16px;">' +
+                                           '<div class="description" data-tooltip="Object in-hand" data-position="bottom-right" data-inverted=""><i class="icon Hand Rock"></i>' + n.inHand.join(', ') + '</div>' +
+                                           '<div class="description" data-tooltip="Object acted on" data-position="bottom-right" data-inverted=""><i class="icon Bullseye"></i>' + n.actedOn.join(', ') + '</div>' +
+                                         '</div>';
+                        html += '</div>' +              // placeholder to inject activity graph into later
+                                     '<div class="content" id="activity-graph-container-' + activityName + '" data-activity="' + activityName + '">' +
+                                     '</div></div>';
+                        list.append('<div class="item"></div>').append(html).accordion(
+                                            {
+                                                'onOpen': function() {
+                                                    var act_name = this.getAttribute('data-activity');
+                                                    $('#activity-graph-container-' + act_name).append('<div id="activity-graph-' + act_name + '" style="width:100%;height:400px;display:block;"></div>')
+                                                    activityGraph_svc.callService( { name : act_name }, function( message ) {
+                                                        var elements = [];
+
+                                                        // first add all nodes to graph
+                                                        message.graph.nodes.forEach( function( entry ) {
+                                                            var node = { data: { id: getShortName( entry.name ) } };
+                                                            if ( entry.name.toLowerCase().includes('<activity>') )
+                                                                node.classes = 'title';
+                                                            elements.push(node);
+                                                        });
+                                                        // add all edges
+                                                        message.graph.nodes.forEach( function( entry ) {
+                                                            var sourceName = getShortName(entry.name);
+                                                            for ( var i = 0; i < entry.neighbors.length; i++ )
+                                                            {
+                                                                var destName = getShortName(entry.neighbors[i]);
+                                                                elements.push({ data: { id: "e_" + sourceName + "_" + destName, source: sourceName, target: destName, weight: entry.weights[i] } });
+                                                            }
+                                                        });
+
+                                                        var graph = activityGraph( $('#activity-graph-' + act_name), elements );
+                                                        graph.$('#IN_HAND').addClass('title');
+                                                        graph.$('#IN_HAND').predecessors().addClass('inhand');
+                                                        graph.$('#ACT_ON').addClass('title');
+                                                        graph.$('#ACT_ON').predecessors().addClass('actedon');
+                                                    })},
+                                                    'onClose': function() {
+                                                        $('#' + this.id).empty();
+                                                    }
+                                            }
+                                        );
+                    });
+                });
+            }
+        }
+
+        function loadObjectList( container )
+        {
+            if ( ros != null && ros.isConnected )
+            {
+                container.empty();
+                getAllClassInstances_svc.callService( new ROSLIB.ServiceRequest, function ( response ) {
+                    for( var i = 0; i < response.classes.length; i++ )
+                    {
+                        var propertyTable = '<table class="ui striped collapsing unstackable table">';
+                        response.properties[i].properties.forEach(function ( n ) {
+                            propertyTable += '<tr><td>' + n.name + '</td><td>' + n.value + '</td>';
+                        });
+                        var position = '<b>Position:</b> ['
+                                      + response.positions[i].x + ', '
+                                      + response.positions[i].y + ', '
+                                      + response.positions[i].z + ']';
+                        var rotation = '<b>Orientation:</b> ['
+                                      + response.orientations[i].x + ', '
+                                      + response.orientations[i].y + ', '
+                                      + response.orientations[i].z + ']';
+                        propertyTable += '</table>';
+                        container.append('<div class="item"><div class="ui large header">'
+                                        + response.entityNames[i]
+                                        + ' ( #' + response.classes[i] + ' )'
+                                        + '<button class="ui tiny compact circular button" onclick="relabelObject(\'' + response.entityNames[i] + '\',\'' + response.classes[i] + '\');"><i class="icon Edit"></i></button>'
+                                        + '</div>'
+                                        + propertyTable
+                                        + '<div class="ui segment">' + position + '</div>'
+                                        + '<div class="ui segment">' + rotation + '</div>'
+                                        + '</div>');
+                    }
+                });
+            }
+        }
+
+        function init_ui()
+        {
+            // if we previously connected to ROS, get the connection details
+            var last_ros_ip   = localStorage.getItem( 'ros_ip' );
+            var last_ros_port = localStorage.getItem( 'ros_port' );
+            if (last_ros_ip != null)
+                $('#ros-ip').val( last_ros_ip );
+            if (last_ros_port != null)
+                $('#ros-port').val( last_ros_port );
+
+            $('.menu .item').tab(
+                {
+                    'onVisible': function( tabpath ) 
+                    {
+                        if( tabpath == 'activity-tab-group' )
+                        {
+                            loadActivityList( $('#activities') );
+                        }
+                        else if( tabpath == 'obj-tab-group' )
+                        {
+                            loadObjectList( $('#obj-instances-list') );
+                        }
+                        else if( tabpath == 'misc-tab-group' )
+                        {
+                            if ( ros != null && ros.isConnected )
+                            {
+                                ros.getServices( function ( result ) {
+                                    var svclist = $('#rosservice-list');
+                                    svclist.empty();
+                                    result.sort().forEach(function( n ) {
+                                        svclist.append('<div class="item">' + n + '</div>');
+                                    });
+                                });
+                                ros.getTopics( function ( result ) {
+                                    var toplist = $('#rostopic-list');
+                                    toplist.empty();
+                                    result.sort().forEach( function( n ) {
+                                        toplist.append('<div class="item">' + n + '</div>');
+                                    });
+                                });
+                            }
+                        } 
+                    }
+                }
+            );
+
+            $('#refresh-obj-instances-btn').on('click', function() {
+                loadObjectList( $('#obj-instances-list') );
+            });
+            
+            $('#new-obj-class-btn').on('click', function() {
+                if( !ros || !ros.isConnected )
+                {
+                    alert( 'You must connect to ROS first!' );
+                    return;
+                }
+
+                $('#new-obj-dialog').modal(
+                {
+                    'onApprove' : function() {
+                        var newClass = $('#new-obj-class-name').val();
+                        var newParent = $('#new-obj-class-parent').val();
+
+                        if( newClass && newParent && newClass != newParent )
+                        {
+                            newClass = newClass.replace(' ', '-');
+                            newParent = newParent.replace(' ', '-');
+                            var request = new ROSLIB.ServiceRequest();
+                            request.className = newClass;
+                            request.parentName = newParent;
+
+                            addOntologyClass_svc.callService( request, function( result ) {
+                                if( !result.success )
+                                    alert('Failed to create new class!\n' + result.reason);
+                            });
+                        }
+                    }
+                }
+                ).modal('show');
+            });
+
+            $('#save-log-btn').on('click', function() {
+                if( ros && ros.isConnected )
+                {
+                    saveLog_svc.callService( new ROSLIB.ServiceRequest(), function( result ) {
+                        alert('Logs saved to: ' + result.location);
+                    });
+                }
+                else
+                {
+                    alert( 'You must connect to ROS first!' );
+                }
+            });
+
+            $('#init-hand-plot-btn').on('click', function() {
+                if( ros && ros.isConnected )
+                {
+                    $('#init-hand-plot-btn').addClass('disabled').addClass('loading');
+                    init_plots( ros );
+                    $('#init-hand-plot-btn').remove();
+                }
+                else
+                {
+                    alert( 'You must connect to ROS first!' );
+                }
+            });
+        }
+    </script>
+
+  </head>
+  <body onload="(function() { init_ui(); })()">
+    <div id="connection-container">
+        <form class="ui form" onsubmit="( function()
+                {
+                    $('#connect-btn').addClass('loading').addClass('disabled');
+                    var ros_ip = document.getElementById('ros-ip');
+                    var ros_port = document.getElementById('ros-port');
+                    ros = connectToROS( ros_ip.value, ros_port.value, function( success ) {
+                        if ( success )
+                        {
+                            $('#connect-btn').addClass('active');
+                            $('#ros-ip').parent().removeClass('error');
+                            $('#ros-port').parent().removeClass('error');
+
+                            // save successful ros connection details for next session
+                            localStorage.setItem( 'ros_ip', ros_ip.value );
+                            localStorage.setItem( 'ros_port', ros_port.value );
+                        }
+                        else
+                        {
+                            $('#connect-btn').removeClass('active').removeClass('disabled');
+                            $('#ros-ip').parent().addClass('error');
+                            $('#ros-port').parent().addClass('error');
+                        }
+
+                        $('#connect-btn').removeClass('loading');
+                    });
+
+                    init_ontograph( document.getElementById( 'graph-container' ), ros );
+                })(); return false;">
+              <div class="inline fields">
+                <label>ROSBridge IP:</label><div class="field"><input id="ros-ip" type="text" value="136.187.35.70"/></div>
+                <label>Port:</label><div class="field"><input id="ros-port" type="text" value="9090" /></div>
+                <button class="ui toggle compact basic button" id="connect-btn" type="submit" value="Connect">Connect</button>
+              </div>
+            </form>
+
+    </div>
+
+    <!-- Main content tab menu-->
+    <div class="ui tabular menu" id="main-tab-group">
+        <div class="item active" data-tab="task-graph-tab">
+            Task Graph
+        </div>
+        <div class="item" data-tab="velocity-vis-tab-group">
+            Data Plots
+        </div>
+        <div class="item" data-tab="activity-tab-group">
+            Activities
+        </div>
+        <div class="item" data-tab="obj-tab-group">
+            Objects
+        </div>
+        <div class="item" data-tab="misc-tab-group">
+            Misc.
+        </div>
+    </div>
+
+    <!-- Main content -->
+
+    <!-- Task Graph Visualization -->
+    <div class="ui tab active" data-tab="task-graph-tab">
+        <input id="taskgraph-refresh-btn" type="submit" value="Refresh"/>
+        <div id="graph-container"></div>
+    </div>
+
+    <!-- Plot Visualizations -->
+    <div class="ui tab" data-tab="velocity-vis-tab-group">
+      <button class="ui circular blue button" id="init-hand-plot-btn">
+        INIT PLOTS
+      </button>
+      <div class="ui horizontal segments">
+        <div class="ui segment" id="plot-container-left-hand-velocity"></div>
+        <div class="ui segment" id="plot-container-left-hand-position"></div>
+      </div>
+
+      <div class="ui horizontal segments">
+        <div class="ui segment" id="plot-container-right-hand-velocity"></div>
+        <div class="ui segment" id="plot-container-right-hand-position"></div>
+      </div>
+    </div>
+
+    <!-- Activity Details & Visualization -->
+    <div class="ui tab" data-tab="activity-tab-group">
+        <div class="ui middle aligned divided list" id="activities" style="margin-left: 32px;">
+
+        </div>
+    </div>
+
+    <div class="ui tab" data-tab="obj-tab-group">
+        <button class="circular ui small icon button" id="refresh-obj-instances-btn">
+            <i class="icon refresh"></i>
+        </button>
+        <button class="circular blue ui button" id="new-obj-class-btn">
+            NEW CLASS
+        </button>
+        <div class="ui raised compact segment" style="margin:16px;">
+            <div class="ui middle aligned divided list" id="obj-instances-list"> </div>
+        </div>
+    </div>
+    <!-- Misc. Settings -->
+    <div class="ui tab" data-tab="misc-tab-group">
+        <h3 class="ui top attached header">Misc Commands</h3>
+        <button class="circular ui blue button" id="save-log-btn">
+            SAVE LOGS NOW
+        </button>
+        <h3 class="ui top attached header">Ros Topics: </h3>
+        <div class="ui middle aligned divided list" id="rostopic-list"> </div>
+        <br />
+        <h3 class="ui top attached header">Ros Services: </h3>
+        <div class="ui middle aligned divided list" id="rosservice-list"> </div>
+    </div>
+
+    <!-- Modal dialogs -->
+    <div class="ui modal" id="new-obj-dialog">
+        <div class="ui header">New Object Class</div>
+        <div class="content">
+            <div class="ui right pointing tag blue label">Class Name</div>
+            <div class="ui input">
+                <input type="text" id="new-obj-class-name" />
+            </div>
+            <br />
+            <div class="ui right pointing tag blue label">Class Parent</div>
+            <div class="ui input">
+                <input type="text" id="new-obj-class-parent" />
+            </div>
+        </div>
+        <div class="actions">
+            <div class="ui red inverted cancel button"><i class="remove icon"></i>Cancel</div>
+            <div class="ui green ok inverted button"><i class="checkmark icon"></i>Submit</div>
+        </div>
+    </div>
+
+    <div class="ui modal" id="relabel-obj-dialog">
+        <div class="ui header">Re-Classify: <span id="relabel-obj-name">Object</span></div>
+        <div class="content">
+          <div class="ui right pointing tag blue label">New Class Name</div>
+          <div class="ui input">
+            <input type="text" id="relabel-obj-class" />
+          </div>
+        </div>
+        <div class="actions">
+            <div class="ui red inverted cancel button"><i class="remove icon"></i>Cancel</div>
+            <div class="ui green ok inverted button"><i class="checkmark icon"></i>Submit</div>
+        </div>
+    </div>
+
+    </body>
+</html>

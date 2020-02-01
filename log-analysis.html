@@ -1,0 +1,937 @@
+
+  <html>
+  <head>
+    <title>OntoAgent Log Analysis Console</title>
+    <link rel="stylesheet" type="text/css" href="semantic-ui/semantic.min.css">
+    <style type="text/css">
+      body {
+        margin: 0px;
+        padding: 0px;
+      }
+      #plot-container-left-hand-velocity {
+        width : 600px;
+        margin: 8px auto;
+      }
+    #plot-container-right-hand-velocity {
+        width : 600px;
+        margin: 8px auto;
+      }
+      #graph-container {
+        width: 100%;
+        height: 600px;
+        margin: 8px auto;
+      }
+      #taskgraph-merged {
+        width: 100%;
+        height: 600px;
+        margin: 8px auto;
+      }
+      .item {
+        cursor: pointer;
+      }
+    </style>
+
+    <script type="text/javascript" src="js/jquery-3.1.1.min.js"></script>
+    <script type="text/javascript" src="js/plotly.min.js"></script>
+    <script type="text/javascript" src="js/cytoscape/cytoscape.min.js"></script>
+    <script type="text/javascript" src="js/cytoscape/dagre.0.7.4.min.js"></script>
+    <script type="text/javascript" src="js/cytoscape/cytoscape-dagre.js"></script>
+    <script type="text/javascript" src="semantic-ui/semantic.min.js"></script>
+
+    <script type="text/javascript" src="task_merging.js"></script>
+    <script type="text/javascript" src="log-parsing.js"></script>
+    <script type="text/javascript" src="graphing.js"></script>
+    <script type="text/javascript" src="plotting.js"></script>
+    <script type="text/javascript" src="utils.js"></script>
+
+     <script type="text/javascript">
+     function init_plots () {
+
+        console.log('Initializing hand plots...');
+
+        // max # of data points to store in a given plot
+        var data_max_len = 1000;
+
+        // layouts for plot labels
+        var lh_vel_layout = {
+            xaxis: { title: "Time (seconds)" },
+            yaxis: { title: "Velocity" },
+            title: "Left Hand Velocity Over Time"
+        };
+
+        var lh_pos_layout = {
+            xaxis: { title: "Time (seconds)" },
+            yaxis: { title: "Position" },
+            title: "Left Hand Position Over Time"
+        };
+
+        var rh_vel_layout = {
+            xaxis: { title: "Time (seconds)" },
+            yaxis: { title: "Velocity" },
+            title: "Right Hand Velocity Over Time"
+        };
+
+        var rh_pos_layout = {
+            xaxis: { title: "Time (seconds)" },
+            yaxis: { title: "Position" },
+            title: "Right Hand Position Over Time"
+        };
+
+        // construct plot objects
+        var rh_velocity = make_velocityPlot(data_max_len);
+        var lh_velocity = make_velocityPlot(data_max_len);
+        var rh_position = make_positionPlot(data_max_len);
+        var lh_position = make_positionPlot(data_max_len);
+
+        // initialize plots
+        var lveldata = [lh_velocity.traces.x, lh_velocity.traces.y, lh_velocity.traces.z];
+        var rveldata = [rh_velocity.traces.x, rh_velocity.traces.y, rh_velocity.traces.z];
+        var lposdata = [lh_position.traces.x, lh_position.traces.y, lh_position.traces.z];
+        var rposdata = [rh_position.traces.x, rh_position.traces.y, rh_position.traces.z];
+        Plotly.newPlot( "plot-container-left-hand-velocity", lveldata, lh_vel_layout );
+        Plotly.newPlot( "plot-container-right-hand-velocity", rveldata, rh_vel_layout );
+        Plotly.newPlot( "plot-container-left-hand-position", lposdata, lh_pos_layout );
+        Plotly.newPlot( "plot-container-right-hand-position", rposdata, rh_pos_layout );
+
+        console.log( 'Plots Initialization complete' );
+    }
+        </script>
+    <!-- Graph rendering -->
+    <script type="text/javascript">
+        function getShortName( name ) {
+            if (name.includes('#'))
+            {
+                return name.split('#')[1];
+            }
+            return name.replace('>', '').replace('<','').replace(' ', '_');
+        }
+
+        function sleep( ms ) {
+          return new Promise( resolve => setTimeout( resolve, ms ) );
+        }
+    </script>
+
+    <script type="text/javascript">
+
+        var world_log = {};
+        var actMap = new ActivityMap();
+        var mergedGraph = null;
+        var truth_log = null;
+
+        function addMotionLogPlot( log, container )
+        {
+            // layouts for plot labels
+            var plot_layout = {
+                xaxis: { title: "Time (seconds)" },
+                yaxis: { showticklabels: false },
+                annotations: [],
+                //title: log.log[0].effector + " motion log",
+                shapes: [
+                    {
+                      type: 'rect',
+                      xref: 'x',
+                      yref: 'y',
+                      x0: log.log[0].start,
+                      y0: 0,
+                      x1: log.log[log.log.length - 1].end,
+                      y1: 0.04,
+                      fillcolor: '#00d3d3',
+                      opacity: 0.2
+                    }
+                ]
+            };
+
+            // traces
+            var t_moving = {
+                x: [],
+                y: [],
+                type: 'scatter',
+                name: 'moving',
+                fill: 'tozeroy',
+                marker: {
+                    color: '#239',
+                    size: 4
+                }
+            };
+            
+            var t_toolUse = {
+                x: [],
+                y: [],
+                text: [],
+                type: 'scatter',
+                name: 'tool_use',
+                fill: 'tozeroy',
+                marker: {
+                    color: '#B92',
+                    size: 4
+                }
+            };
+
+            var t_velMag = {
+                x: [],
+                y: [],
+                type: 'scatter',
+                name: 'velocity magnitude',
+                line: {
+                    color: '#B22',
+                    shape: 'spline'
+                }
+            };
+            
+            // traces
+            var gt_moving = {
+                x: [],
+                y: [],
+                type: 'scatter',
+                name: 'moving (gt)',
+                fill: 'tozeroy',
+                marker: {
+                    color: '#8F2',
+                    size: 4
+                }
+            };
+            
+            var gt_toolUse = {
+                x: [],
+                y: [],
+                text: [],
+                type: 'scatter',
+                name: 'tool_use (gt)',
+                fill: 'tozeroy',
+                marker: {
+                    color: '#F2F',
+                    size: 4
+                }
+            };
+            
+            var t_error = {
+                x: [],
+                y: [],
+                type: 'scatter',
+                name: 'errors',
+                fill: 'tozeroy',
+                marker: {
+                    color: '#F00',
+                    size: 4
+                }
+            }
+
+            var total_steps  = 0.0;
+            var total_errors = 0.0;
+            var match_counts = {};
+            var error_counts = {};
+            var gt_groups = [];
+            var pd_groups = [];
+            if( world_log.contains(log.log[0].effector) )
+            {
+                var p_handVel = make_velocityPlot( world_log[log.log[0].effector].length );
+                world_log[log.log[0].effector].forEach( function( entry ) {
+                    p_handVel.push(entry.time, {x: entry.velocity[0], y: entry.velocity[1], z: entry.velocity[2]} );
+
+                    t_velMag.x.push(entry.time);
+                    t_velMag.y.push( Math.sqrt( entry.velocity[0] * entry.velocity[0] +
+                                                entry.velocity[1] * entry.velocity[1] +
+                                                entry.velocity[2] * entry.velocity[2] ) );
+
+                    // compare ground-truth and computed for this timestamp
+                    var gt_val = truth_log.at( entry.time );
+                    var cp_val = log.at( entry.time );
+                    total_steps++;
+                    if( gt_val && cp_val && (gt_val.activity != cp_val.activity) )
+                    {
+                        total_errors++;
+                        t_error.x.push( entry.time );
+                        t_error.y.push( 1.5 );
+                        if( gt_val.activity in error_counts )
+                            error_counts[gt_val.activity]++;
+                        else
+                            error_counts[gt_val.activity] = 1;
+                    }
+                    else
+                    {
+                        t_error.x.push( entry.time );
+                        t_error.y.push( 0 );
+
+                        if( gt_val )
+                        {
+                            if( gt_val.activity in match_counts )
+                                match_counts[gt_val.activity]++;
+                            else
+                                match_counts[gt_val.activity] = 1;
+                        }
+                        else if( cp_val )
+                        {
+                            if( cp_val.activity in match_counts )
+                                match_counts[cp_val.activity]++;
+                            else
+                                match_counts[cp_val.activity] = 1;
+                        }
+                    }
+                    
+                    if( gt_val )
+                        gt_groups.push( gt_val.activity );
+                    else
+                        gt_groups.push( 'NaN' );
+                    if( cp_val )
+                        pd_groups.push( cp_val.activity );
+                    else
+                        pd_groups.push( 'NaN' );
+                });
+            }
+            
+            console.log("Total timesteps: " + total_steps + ", total_errors: " + total_errors);
+            console.log("errors / steps : " + total_errors / total_steps);
+            console.log("% match: " + (1.0 - total_errors / total_steps)*100.0);
+            console.log("Match counts: ", match_counts);
+            console.log("Error counts: ", error_counts);
+            console.log("Ground Truth Groups: ", gt_groups);
+            console.log("Predicted Groups:    ", pd_groups);
+            var gtstr = 'known = [';
+            gt_groups.forEach(function( e ) {
+                gtstr += ' ' + e + ' ';
+            });
+            gtstr += ']\';';
+            var pdstr = 'pred = [';
+            pd_groups.forEach(function( e ) {
+                pdstr += ' ' + e + ' ';
+            });
+            pdstr += '];';
+            console.log('known str: ', gtstr);
+            console.log('predi std: ', pdstr);
+/*
+            var cp_trans = ['start'];
+            var gt_trans = ['start'];
+            for( var i = 0; i < log.log.length; i++)
+            {
+                cp_trans.push( cp_trans[i] + "->" + log.log[i].activity );
+            }
+            for( var i = 0; i < truth_log.log.length; i++)
+            {
+                gt_trans.push( gt_trans[i] + "->" + truth_log.log[i].activity );
+            }
+
+            console.log(cp_trans);
+            console.log(gt_trans);
+*/
+            log.log.forEach( function( entry ) {
+                if( entry.moving )
+                {
+                    t_moving.x.push(entry.start);
+                    t_moving.x.push(entry.start);
+                    t_moving.x.push(entry.end);
+                    t_moving.x.push(entry.end);
+                    t_moving.y.push(0);
+                    t_moving.y.push(1);
+                    t_moving.y.push(1);
+                    t_moving.y.push(0);
+                }
+                if( entry.tool_use )
+                {
+                    var label = "in_hand: " + entry.inHand + "\nact_on: " + entry.actedOn;
+                    t_toolUse.x.push(entry.start);
+                    t_toolUse.y.push(0);
+                    t_toolUse.text.push(label);
+
+                    t_toolUse.x.push(entry.start);
+                    t_toolUse.y.push(1.1);
+                    t_toolUse.text.push(label);
+
+                    t_toolUse.x.push(entry.end);
+                    t_toolUse.y.push(1.1);
+                    t_toolUse.text.push(label);
+
+                    t_toolUse.x.push(entry.end);
+                    t_toolUse.y.push(0);
+                    t_toolUse.text.push(label);
+                }
+                plot_layout.annotations.push({
+                    x: entry.start + (entry.duration() / 2.0), // + (entry.duration() / 2.0),
+                    y: 1.0,
+                    ax: 0,
+                    ay: -80,
+                    text: entry.activity,
+                    textangle: 90
+                });
+            });
+
+            truth_log.log.forEach( function( entry ) {
+                if( entry.moving )
+                {
+                    gt_moving.x.push(entry.start);
+                    gt_moving.x.push(entry.start);
+                    gt_moving.x.push(entry.end);
+                    gt_moving.x.push(entry.end);
+                    gt_moving.y.push(0);
+                    gt_moving.y.push(0.5);
+                    gt_moving.y.push(0.5);
+                    gt_moving.y.push(0);
+                }
+                if( entry.tool_use )
+                {
+                    var label = "in_hand: " + entry.inHand + "\nact_on: " + entry.actedOn;
+                    gt_toolUse.x.push(entry.start);
+                    gt_toolUse.y.push(0);
+                    gt_toolUse.text.push(label);
+
+                    gt_toolUse.x.push(entry.start);
+                    gt_toolUse.y.push(0.61);
+                    gt_toolUse.text.push(label);
+
+                    gt_toolUse.x.push(entry.end);
+                    gt_toolUse.y.push(0.61);
+                    gt_toolUse.text.push(label);
+
+                    gt_toolUse.x.push(entry.end);
+                    gt_toolUse.y.push(0);
+                    gt_toolUse.text.push(label);
+                }
+                plot_layout.annotations.push({
+                    x: entry.start + (entry.duration() / 2.0), // + (entry.duration() / 2.0),
+                    y: 0.5,
+                    ax: 0,
+                    ay: 70,
+                    text: entry.activity,
+                    textangle: 90
+                });
+            });
+            
+            var motionPlot = {
+                traces : {
+                    x : t_moving,
+                    y : t_toolUse,
+                    z : t_velMag
+                },
+                getData : function() {
+                    return [{'x' : this.traces.x, 'y' : this.traces.y}];
+                }
+            };
+
+            var plotData = [motionPlot.traces.x, motionPlot.traces.y, t_velMag, gt_moving, gt_toolUse, t_error];
+            Plotly.newPlot( container, plotData, plot_layout );
+        }
+
+        function fillActivityList( activities, container )
+        {
+            // clear existing list
+            container.empty();
+            activities.forEach( function( n ) {
+                var html = '<div class="ui item segment"><div class="header">' +
+                          n.activityName + '</div>';
+                // add element for inhand/actedon objects only if we have some
+                if (n.inHand.length > 0 || n.actedOn.length > 0)
+                    html += '<div class="ui compact segment" style="margin-left: 16px;">' +
+                                   '<div class="description" data-tooltip="Object in-hand" data-inverted=""><i class="icon Hand Rock"></i>' + n.inHand.join(', ') + '</div>' +
+                                   '<div class="description" data-tooltip="Object acted on" data-inverted=""><i class="icon Bullseye"></i>' + n.actedOn.join(', ') + '</div>' +
+                                 '</div>';
+                html += '</div>'
+
+                container.append(html);
+            });
+        }
+
+        function fillActivityMergeList( activities, container )
+        {
+            // clear existing list
+            container.empty();
+            for( var activity in activities.activities )
+            {
+                var html = '<div class="ui item segment"><div class="header">' +
+                          activity + '</div>';
+                    html += '<div id="'+ activity.replace(/\W/g, '') +'" class="ui compact segment" style="margin-left: 16px;">' +
+                                activities.activities[activity].join(', ') +
+                            '</div>';
+                    html += '<button class="ui small compact teal icon button" onclick="(function(){' +
+                            'var newname = prompt(\'Enter new activity name\').replace(/\\s/g, \'_\'); actMap.add(newname,\''+activity+'\');' +
+                            '$(\'#' + activity.replace(/\W/g, '') + '\').append(\'<b>, \'+newname + \'</b>\');' +
+                            'event.stopPropagation();})()"><i class="icon plus" /></button>';
+                html += '</div>'
+
+                container.append(html);
+            }
+        }
+
+        function mergeIntoTaskGraph( graph, container )
+        {
+            var max_weight = 1;
+            // on first call, construct graph
+            if (mergedGraph == null)
+            {
+                var graph_nodes = [];
+                var graph_edges = [];
+            
+                graph.forEach( function( node ) {
+                    node.weights.forEach( function ( weight ) {
+                        if( weight > max_weight)
+                            max_weight = weight;
+                        });
+                });
+
+                graph.forEach( function( n ) {
+                    graph_nodes.push( { data: { id: actMap.map(n.name) } } );
+                    for( var i = 0; i < n.neighbors.length; i++ )
+                    {
+                        graph_edges.push({ data: {
+                            source: actMap.map(n.name),
+                            target: actMap.map(n.neighbors[i]),
+                            weight: n.weights[i],
+                        }});
+                    }
+                });
+
+                mergedGraph = TaskGraph( container, graph_nodes, graph_edges );
+
+                document.getElementById('taskmerged-refit-btn').addEventListener("click",
+                    function()
+                    {
+                        mergedGraph.fit('*');
+                        mergedGraph.center();
+                    }
+                );
+
+                document.getElementById('taskmerged-save-btn').addEventListener("click",
+                    function()
+                    {
+                        saveGraph( mergedGraph, actMap );
+                    }
+                );
+            }
+            // otherwise update as we can
+            else
+            {
+                // insert any new nodes
+                graph.forEach( function( node ) {
+                    var n = mergedGraph.nodes("[id='" + actMap.map(node.name) + "']");
+                    if( n.length == 0 )
+                        mergedGraph.add({ data: { id: actMap.map(node.name) } });
+                });
+                // update edge weights
+                graph.forEach( function( node ) {
+                    for( var i = 0; i < node.neighbors.length; i++)
+                    {
+                        var e = mergedGraph.edges("[source='" + actMap.map(node.name) + "'][target='" + actMap.map(node.neighbors[i]) + "']");
+                        if( e.length > 0 )
+                        {
+                            // update edge weight
+                            var new_weight = e.data("weight") + node.weights[i];
+                            if( new_weight > max_weight )
+                                max_weight = new_weight;
+                            e.data("weight", new_weight);
+                        }
+                        else
+                        {
+                            // add new edge
+                            mergedGraph.add({ data: {
+                                source: actMap.map(node.name),
+                                target: actMap.map(node.neighbors[i]),
+                                weight: node.weights[i],
+                            }});
+                        }
+                    }
+                });
+                mergedGraph.layout( TaskGraphLayout( mergedGraph ) );
+            }
+        }
+
+        function showTaskGraph( graph_data, container )
+        {
+            var graph_nodes = [];
+            var graph_edges = [];
+
+            var max_weight = 1;
+            graph_data.forEach( function( node ) {
+                node.weights.forEach( function ( weight ) {
+                    if( weight > max_weight)
+                        max_weight = weight;
+                });
+            });
+
+            graph_data.forEach( function( n ) {
+                graph_nodes.push( { data: { id: n.name } } );
+                for( var i = 0; i < n.neighbors.length; i++ )
+                {
+                    graph_edges.push({ data: {
+                        source: n.name,
+                        target: n.neighbors[i],
+                        weight: n.weights[i],
+                    }});
+                }
+            });
+
+            var cy = TaskGraph( container, graph_nodes, graph_edges );
+
+             document.getElementById('taskgraph-refit-btn').addEventListener("click",
+                 function()
+                 {
+                     cy.fit('*');
+                     cy.center();
+                 }
+             );
+
+             
+        }
+
+        function init_ui()
+        {
+            $('#motion-log-file').on('change', async function( e ) {
+                showLoading( $('#motion-log-file-selection'), true );
+                var field = $('#motion-log-file');
+
+                if (field[0].files.length < 1)
+                {
+                    showLoading( $('#motion-log-file-selection'), false).removeClass('green').addClass('red');
+                    return;
+                }
+
+                var file = field[0].files[0];
+                
+                var reader = new FileReader();
+                reader.onload = function( e ) {
+                    var log = parseMotionLog( reader.result );
+                    if (log.length() < 1)
+                    {
+                        $('#motion-log-file-selection').removeClass('green').addClass('red');
+                    }
+                    else
+                    {
+                        $('#motion-log-file-selection').removeClass('red').addClass('green');
+                        addMotionLogPlot( log, 'motion-log-disp' );
+                    }
+
+                    showLoading( $('#motion-log-file-selection'), false );
+                }
+                
+                reader.readAsText( file );
+            } );
+            
+            $('#gt-log-file').on('change', async function( e ) {
+                showLoading( $('#gt-log-file-selection'), true );
+                var field = $('#gt-log-file');
+
+                if (field[0].files.length < 1)
+                {
+                    showLoading( $('#gt-log-file-selection'), false).removeClass('green').addClass('red');
+                    return;
+                }
+
+                var file = field[0].files[0];
+                
+                var reader = new FileReader();
+                reader.onload = function( e ) {
+                    var log = parseMotionLog( reader.result );
+                    if (log.length() < 1)
+                    {
+                        $('#gt-log-file-selection').removeClass('green').addClass('red');
+                    }
+                    else
+                    {
+                        $('#gt-log-file-selection').removeClass('red').addClass('green');
+                        truth_log = log;
+                    }
+
+                    showLoading( $('#gt-log-file-selection'), false );
+                }
+                
+                reader.readAsText( file );
+            } );
+
+            $('#world-log-file').on('change', async function( e ) {
+                showLoading( $('#world-log-file-selection'), true );
+                var field = $('#world-log-file');
+                
+                if (field[0].files.length < 1)
+                {
+                    showLoading( $('#world-log-file-selection'), false ).removeClass('green').addClass('red');
+                    return;
+                }
+
+                var file = field[0].files[0];
+                var reader = new FileReader();
+                reader.onload = function( e ) {
+                    var log = parseSimulationLog( reader.result );
+                    if (!log || log.size() < 1)
+                    {
+                        $('#world-log-file-selection').removeClass('green').addClass('red');
+                    }
+                    else
+                    {
+                        $('#world-log-file-selection').removeClass('red').addClass('green');
+                        world_log = log;
+                        $('#motion-log-file-selection').removeClass('disabled');
+                        $('#motion-log-file').prop('disabled', false);
+                    }
+
+                    showLoading( $('#world-log-file-selection'), false );
+                }
+
+                reader.readAsText( file );
+            } );
+
+            $('#activity-log-file').on('change', async function( e ) {
+                showLoading( $('#activity-log-file-selection'), true );
+                var field = $('#activity-log-file');
+
+                if( field[0].files.length < 1 )
+                {
+                    showLoading( $('#activity-log-file-selection'), false ).removeClass('green').addClass('red');
+                    return;
+                }
+
+                var file = field[0].files[0];
+                var reader = new FileReader();
+                reader.onload = function( e ) {
+                    var log = parseActivityLog( reader.result );
+                    if( log.length < 1 )
+                    {
+                        $('#activity-log-file-selection').removeClass('green').addClass('red');
+                    }
+                    else
+                    {
+                        fillActivityList( log, $('#activities') );
+                        $('#activity-log-file-selection').removeClass('red').addClass('green');
+                    }
+
+                    showLoading( $('#activity-log-file-selection'), false );
+                }
+
+                reader.readAsText( file );
+            } );
+
+            $('#activity-merge-file').on('change', async function( e ) {
+                showLoading( $('#activity-merge-file-selection'), true );
+                var field = $('#activity-merge-file');
+
+                if( field[0].files.length < 1 )
+                {
+                    showLoading( $('#activity-merge-file-selection'), false ).removeClass('green').addClass('red');
+                    return;
+                }
+
+                var file = field[0].files[0];
+                var reader = new FileReader();
+                reader.onload = function( e ) {
+                    var log = addToActivityMap( reader.result, actMap );
+                    if( log.length() < 1 )
+                    {
+                        $('#activity-merge-file-selection').removeClass('green').addClass('red');
+                    }
+                    else
+                    {
+                        fillActivityMergeList( log, $('#activity-merge-list') );
+                        $('#activity-merge-file-selection').removeClass('red').addClass('green');
+                    }
+
+                    showLoading( $('#activity-merge-file-selection'), false );
+                }
+
+                reader.readAsText( file );
+            } );
+
+            $('#taskgraph-merge-file').on('change', async function( e ) {
+                showLoading( $('#taskgraph-merge-file-selection'), true );
+                var field = $('#taskgraph-merge-file');
+
+                if( field[0].files.length < 1 )
+                {
+                    showLoading( $('#taskgraph-merge-file-selection'), false ).removeClass('green').addClass('red');
+                    return;
+                }
+
+                var file = field[0].files[0];
+                var reader = new FileReader();
+                reader.onload = function( e ) {
+                    var log = parseTaskGraph2( reader.result );
+                    if( log.length < 1 )
+                    {
+                        $('#taskgraph-merge-file-selection').removeClass('green').addClass('red');
+                    }
+                    else
+                    {
+                        mergeIntoTaskGraph( log, $('#taskgraph-merged') );
+                        $('#taskgraph-merge-file-selection').removeClass('red').addClass('green');
+                    }
+
+                    showLoading( $('#taskgraph-merge-file-selection'), false );
+                }
+
+                reader.readAsText( file );
+            } );
+
+            $('#taskgraph-log-file').on('change', async function( e ) {
+                showLoading( $('#taskgraph-log-file-selection'), true );
+                var field = $('#taskgraph-log-file');
+
+                if( field[0].files.length < 1 )
+                {
+                    showLoading( $('#taskgraph-log-file-selection'), false ).removeClass('green').addClass('red');
+                    return;
+                }
+
+                var file = field[0].files[0];
+                var reader = new FileReader();
+                reader.onload = function( e ) {
+                    var log = parseTaskGraph( reader.result );
+                    if( log.length < 1 )
+                    {
+                        $('#taskgraph-log-file-selection').removeClass('green').addClass('red');
+                    }
+                    else
+                    {
+                        showTaskGraph( log, $('#graph-container') );
+                        $('#taskgraph-log-file-selection').removeClass('red').addClass('green');
+                    }
+
+                    showLoading( $('#taskgraph-log-file-selection'), false );
+                }
+
+                reader.readAsText( file );
+            });
+
+            $('#save-act-map').on('click', function() {
+                console.log( actMap.toString() );
+            });
+
+            $('#prune-merge-graph').on('click', function() {
+                mergedGraph = pruneEdges( mergedGraph, parseInt($('#prune-merge-thresh').val()) );
+            });
+
+            $('#merge-img-save').on('click', function() {
+                var b64key = 'base64,';
+                var b64 = mergedGraph.png().substring( mergedGraph.png().indexOf(b64key) + b64key.length );
+                var imgBlob = base64toBlob( b64, 'image/png' );
+
+                saveAs( imgBlob, 'graph.png' );
+            });
+
+            $('.menu .item').tab(
+                {
+                    'onVisible': function( tabpath ) 
+                    {
+
+                    }
+                }
+            );
+        }
+    </script>
+
+  </head>
+  <body onload="(function() { init_ui(); })()">
+
+    <!-- Main content tab menu-->
+    <div class="ui tabular menu" id="main-tab-group">
+        <div class="item active" data-tab="motion-log-tab">
+            Motion Logs
+        </div>
+        <div class="item" data-tab="task-graph-tab">
+            Task Graph
+        </div>
+        <div class="item" data-tab="activity-log-tab">
+            Activities
+        </div>
+        <div class="item" data-tab="activity-merge-tab">
+            Merging
+        </div>
+    </div>
+
+    <!-- Main content -->
+
+    <!-- Motion Log/Segmentation Graphing -->
+    <div class="ui tab active" data-tab="motion-log-tab">
+        <div class="ui segment red" id="world-log-file-selection">
+            <div class="ui top attached label">
+                 World Log File
+                 <i class="File Text icon large"></i>
+                 <input type="file" id="world-log-file" name="worldLogFile" />
+            </div>
+        </div>
+        <div class="ui segment red disabled" id="motion-log-file-selection">
+            <div class="ui top attached label">
+                 Motion Log File
+                 <i class="File Text icon large"></i>
+                 <input type="file" id="motion-log-file" name="motionLogFile" disabled="true" />
+            </div>
+        </div>
+        <div class="ui segment red" id="gt-log-file-selection">
+            <div class="ui top attached label">
+                 Ground Truth
+                 <i class="File Text icon large"></i>
+                 <input type="file" id="gt-log-file" name="gtLogFile" />
+            </div>
+        </div>
+
+        <div class="ui segment">
+            <div id="motion-log-disp"> </div>
+        </div>
+    </div>
+
+        <!-- Task Graph Visualization -->
+    <div class="ui tab" data-tab="task-graph-tab">
+        <div class="ui segment red" id="taskgraph-log-file-selection">
+            <div class="ui top attached label">
+                 TaskGraph txt
+                 <i class="File Text icon large"></i>
+                 <input type="file" id="taskgraph-log-file" name="taskgraphLogFile" />
+            </div>
+        </div>
+        <button class="circular ui small icon button" id="taskgraph-refit-btn">
+            <i class="icon refresh"></i>
+        </button>
+        <div id="graph-container"></div>
+    </div>
+    
+    <!-- Activity Details & Visualization -->
+    <div class="ui tab" data-tab="activity-log-tab">
+        <div class="ui segment red" id="activity-log-file-selection">
+            <div class="ui top attached label">
+                 Activity Log
+                 <i class="File Text icon large"></i>
+                 <input type="file" id="activity-log-file" name="activityLogFile" />
+            </div>
+        </div>
+        <div class="ui middle aligned divided list" id="activities" style="margin-left: 32px;">
+
+        </div>
+    </div>
+
+    <!-- Task Graph / Activity Merging -->
+    <div class="ui tab" data-tab="activity-merge-tab">
+        <div class="ui segment red" id="activity-merge-file-selection">
+            <div class="ui top attached label">
+                 +Activity Log
+                 <i class="File Text icon large"></i>
+                 <input type="file" id="activity-merge-file" name="activityMergeFile" />
+            </div>
+        </div>
+        <div class="ui segment red" id="taskgraph-merge-file-selection">
+            <div class="ui top attached label">
+                 +Task Graph
+                 <i class="File Text icon large"></i>
+                 <input type="file" id="taskgraph-merge-file" name="taskgraphMergeFile" />
+            </div>
+        </div>
+        <div class="ui segment">
+            <button class="circular ui small icon button" id="taskmerged-refit-btn">
+                 <i class="icon refresh"></i>
+            </button>
+            <button class="circular ui small icon button" id="taskmerged-save-btn">
+                 <i class="icon save"></i>
+            </button>
+            <div class="ui mini left action input">
+              <button id="prune-merge-graph" class="ui small compact red rounded button">Prune At</button>
+              <input type="text" style="width:40px" value="1" id="prune-merge-thresh" />
+            </div>
+            <div id="taskgraph-merged" ></div>
+        </div>
+        <div class="ui segment">
+            
+            <button id="merge-img-save" class="ui teal rounded button">Save PNG</button>
+        </div>
+        <div class="ui segment">
+            <button id="save-act-map" class="ui blue rounded button">Save Activity Map</button>
+            <div class="ui middle aligned divided list" id="activity-merge-list" style="margin-left: 32px;">
+
+            </div>
+        </div>
+        </div>
+
+    </body>
+</html>
